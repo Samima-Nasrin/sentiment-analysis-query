@@ -12,6 +12,7 @@ This project combines **real-time data fetching, natural language sentiment scor
   - **GNews API** for trending news articles.  
   - **Wikipedia API** for knowledge-based summaries.  
   - **Reddit API** for public opinions and discussions.
+- **Semantic embedding**
   - Uses a **semantic embedding model** (`@xenova/transformers` / MiniLM) to score each candidate by *relevance to the query*.
   - Keeps only the top-N **most relevant texts** (configurable). 
 
