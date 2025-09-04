@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
 import vader from "vader-sentiment";
-import { pipeline } from "@xenova/transformers"; // 👈 new for relevance scoring
+import { pipeline } from "@xenova/transformers";
 
+// APIs
 const GNEWS_API = "https://gnews.io/api/v4/search";
 const WIKI_API = "https://en.wikipedia.org/w/api.php";
-const REDDIT_API = "https://www.reddit.com/search.json";
 
 // Sentiment Analysis
 function analyzeSentiment(text: string) {
@@ -15,7 +15,7 @@ function analyzeSentiment(text: string) {
   return "Neutral";
 }
 
-//Relevance Scoring
+// Relevance Scoring
 let embedder: any = null;
 async function getEmbedder() {
   if (!embedder) {
@@ -56,15 +56,34 @@ async function scoreRelevance(query: string, items: any[]) {
     .sort((a, b) => b.relevance - a.relevance);
 }
 
-//Main API
+// Reddit OAuth Token Fetch
+async function getRedditToken() {
+  const auth = Buffer.from(
+    `${process.env.REDDIT_CLIENT_ID}:${process.env.REDDIT_CLIENT_SECRET}`
+  ).toString("base64");
+
+  const res = await axios.post(
+    "https://www.reddit.com/api/v1/access_token",
+    "grant_type=client_credentials",
+    {
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "User-Agent": process.env.REDDIT_USER_AGENT || "sentiment-dashboard/1.0",
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    }
+  );
+
+  return res.data.access_token;
+}
+
+// Main API
 export async function POST(req: Request) {
   try {
     const { query } = await req.json();
-    if (!query) {
-      return NextResponse.json({ error: "Query required" }, { status: 400 });
-    }
+    if (!query) return NextResponse.json({ error: "Query required" }, { status: 400 });
 
-    //GNews fetch
+    // GNews fetch
     let gnewsArticles: any[] = [];
     try {
       const gnewsRes = await axios.get(GNEWS_API, {
@@ -79,17 +98,11 @@ export async function POST(req: Request) {
       console.warn("GNews fetch failed:", e.message);
     }
 
-    //Wikipedia fetch
+    // Wikipedia fetch
     let wikiPages: any[] = [];
     try {
       const wikiSearch = await axios.get(WIKI_API, {
-        params: {
-          action: "query",
-          format: "json",
-          list: "search",
-          srsearch: query,
-          utf8: 1,
-        },
+        params: { action: "query", format: "json", list: "search", srsearch: query, utf8: 1 },
       });
 
       wikiPages = await Promise.all(
@@ -118,27 +131,26 @@ export async function POST(req: Request) {
       console.warn("Wikipedia fetch failed:", e.message);
     }
 
-    //Reddit fetch
+    // Reddit fetch using OAuth
     let redditPosts: any[] = [];
     try {
-      const redditRes = await axios.get(REDDIT_API, {
+      const token = await getRedditToken();
+      const redditRes = await axios.get("https://oauth.reddit.com/search", {
         params: { q: query, limit: 50, sort: "relevance", t: "month" },
-        headers: { "User-Agent": "sentiment-dashboard/1.0" },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "User-Agent": process.env.REDDIT_USER_AGENT || "sentiment-dashboard/1.0",
+        },
       });
 
       redditPosts = redditRes.data.data.children
         .map((c: any) => c.data)
         .filter((post: any) => {
-          // Filter rules
           if (!post.title) return false;
-          if (post.title.length < 15) return false; 
-          if (
-            post.subreddit &&
-            ["anime", "memes", "funny", "pics"].includes(post.subreddit.toLowerCase())
-          ) {
+          if (post.title.length < 15) return false;
+          if (post.subreddit && ["anime", "memes", "funny", "pics"].includes(post.subreddit.toLowerCase()))
             return false;
-          }
-          if (post.upvote_ratio && post.upvote_ratio < 0.5) return false; 
+          if (post.upvote_ratio && post.upvote_ratio < 0.5) return false;
           return true;
         })
         .slice(0, 10)
@@ -152,15 +164,13 @@ export async function POST(req: Request) {
       console.warn("Reddit fetch failed:", e.message);
     }
 
-    //Combine & Relevance Filter
+    // Combine & relevance
     const rawResults = [...gnewsArticles, ...wikiPages, ...redditPosts].filter(Boolean);
-
     const scored = await scoreRelevance(query, rawResults);
     const allResults = scored.slice(0, 50);
-    //Sentiment Stats
+
     const counts = { Positive: 0, Negative: 0, Neutral: 0 };
     allResults.forEach((r) => counts[r.sentiment as keyof typeof counts]++);
-
     const total = allResults.length || 1;
     const percentages = {
       Positive: Math.round((counts.Positive / total) * 100),
@@ -168,13 +178,7 @@ export async function POST(req: Request) {
       Neutral: Math.round((counts.Neutral / total) * 100),
     };
 
-    return NextResponse.json({
-      query,
-      total: allResults.length,
-      counts,
-      percentages,
-      results: allResults,
-    });
+    return NextResponse.json({ query, total: allResults.length, counts, percentages, results: allResults });
   } catch (err: any) {
     console.error(err);
     return NextResponse.json({ error: "Failed to analyze" }, { status: 500 });
